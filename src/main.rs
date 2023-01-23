@@ -1,3 +1,11 @@
+mod win32;
+
 fn main() {
-    println!("Hello, world!");
+    let mut watcher = win32::MonitorHandler::create_watcher();
+
+    let handle = std::thread::spawn(move || {
+        watcher.start();
+    });
+
+    handle.join().unwrap();
 }
