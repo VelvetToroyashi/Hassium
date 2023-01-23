@@ -1,7 +1,5 @@
-use std::ops::Deref;
 use std::sync::atomic::AtomicBool;
-use std::sync::{Arc, RwLock};
-use std::thread::{JoinHandle, ScopedJoinHandle};
+use std::sync::{Arc, RwLock, Mutex};
 use windows::Win32::Foundation::{BOOL, HWND, LPARAM, RECT};
 use windows::Win32::UI::WindowsAndMessaging::{EnumWindows, IsWindowVisible, MoveWindow};
 use windows::{
@@ -22,7 +20,7 @@ pub struct MonitorHandler {
     remove_token: Option<EventRegistrationToken>,
 }
 
-pub struct Monitor {
+pub(self) struct Monitor {
     pub info: DeviceInformation,
     pub windows: Vec<Window>,
 }
@@ -54,19 +52,37 @@ impl MonitorHandler {
         use std::sync::atomic::Ordering;
         use std::thread;
 
-        self.hook_events();
-        self.watcher.Start().expect("Failed to start watcher");
+        let mut leak: &'static mut Self = Box::leak(Box::new(self));
 
-        let is_sleep = &mut self.is_sleep;
-        let monitors_clone = &mut self.monitors.clone();
+        let leak = Arc::new(Mutex::new(leak));
 
+        Self::hook_events(leak.clone());
+        
+        {
+            let s = leak.lock().expect("Mutex is poisoned?");
+            s.watcher.Start().expect("Failed to start watcher");
+        }
+        
         loop {
             // Wait for the monitor to be woken up
-            while is_sleep.load(Ordering::Relaxed) {
-                hint::spin_loop();
+            {
+                loop {
+                    let self_lock = leak.lock().expect("Mutex is poisoned :(");
+                
+                    let is_sleep = self_lock.is_sleep.load(Ordering::Relaxed);
+
+                    if !is_sleep {
+                        break
+                    }
+
+                    drop(self_lock); // Drop before we spin or we'll deadlock
+                    hint::spin_loop();
+                }
             }
 
-            let mut monitors = monitors_clone.write().unwrap();
+            let self_lock = leak.lock().expect("Mutex is poisoned");
+
+            let mut monitors = self_lock.monitors.write().unwrap();
             for monitor in monitors.iter_mut() {
                 let mut windows = Vec::<Window>::new();
                 unsafe {
@@ -81,33 +97,49 @@ impl MonitorHandler {
         }
     }
 
-    fn hook_events(&mut self) {
-        let add_clone = &self.monitors.clone();
-        let add_token = self
-            .watcher
-            .Added(&TypedEventHandler::new(
-                |w: &Option<DeviceWatcher>, info: &Option<DeviceInformation>| {
-                    self.added(w, info, add_clone)
-                },
-            ))
-            .unwrap();
+    fn hook_events(this: Arc<Mutex<&'static mut Self>>) {
 
-        let remove_token = self
+        let add_token: EventRegistrationToken;
+        let remove_token: EventRegistrationToken;
+
+        {    
+            let add_clone = this.clone();
+            add_token = this
+                .lock()
+                .expect("Mutex is poisoned")
+                .watcher
+                .Added(&TypedEventHandler::new(
+                    move |w: &Option<DeviceWatcher>, info: &Option<DeviceInformation>| {
+                        let mut s = add_clone.lock().expect("Mutex is poisoned");
+                        s.added(w, info, s.monitors.clone())
+                    },
+                ))
+                .unwrap();
+        }
+
+        let remove_clone = this.clone();
+        remove_token = this
+            .lock()
+            .expect("Mutex is poisoned")
             .watcher
             .Removed(&TypedEventHandler::new(
-                |watcher, info: &Option<DeviceInformationUpdate>| self.removed(watcher, info),
+                move |watcher, info: &Option<DeviceInformationUpdate>| 
+                remove_clone.lock().expect("Mutex is poisoned").removed(watcher, info),
             ))
             .unwrap();
 
-        self.add_token = Some(add_token);
-        self.remove_token = Some(remove_token);
+
+        let mut this = this.lock().expect("Mutex is poisoned");
+
+        this.add_token = Some(add_token);
+        this.remove_token = Some(remove_token)
     }
 
     fn added(
         &self,
         _watcher: &Option<DeviceWatcher>,
         info: &Option<DeviceInformation>,
-        lock: &Arc<RwLock<Vec<Monitor>>>,
+        lock: Arc<RwLock<Vec<Monitor>>>,
     ) -> Result<(), windows::core::Error> {
         let unwrapped = match info {
             Some(info) => info,
@@ -129,11 +161,12 @@ impl MonitorHandler {
                 monitor.info = unwrapped.clone();
                 return Ok(());
             } else {
-                for (index, window) in monitor.windows.iter_mut().enumerate() {
+                for i in (0..monitor.windows.len()).rev() {
                     unsafe {
+                        let window = monitor.windows.get(i).unwrap();
                         let exists = IsWindowVisible(window.id).as_bool();
                         if !exists {
-                            monitor.windows.remove(index);
+                            monitor.windows.remove(i);
                             continue;
                         }
 
