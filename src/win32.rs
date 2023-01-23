@@ -205,6 +205,8 @@ impl Drop for MonitorHandler {
     fn drop(&mut self) {
         let _ = self.watcher.RemoveAdded(self.add_token.unwrap());
         let _ = self.watcher.RemoveRemoved(self.remove_token.unwrap());
+
+        self.watcher.Stop();
     }
 }
 
