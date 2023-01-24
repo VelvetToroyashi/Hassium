@@ -1,7 +1,14 @@
+use std::ffi::c_void;
 use std::sync::atomic::AtomicBool;
-use std::sync::{Arc, RwLock, Mutex};
+use std::sync::{Arc, Mutex, RwLock};
+
 use windows::Win32::Foundation::{BOOL, HWND, LPARAM, RECT};
-use windows::Win32::UI::WindowsAndMessaging::{EnumWindows, IsWindowVisible, MoveWindow};
+use windows::Win32::Graphics::Dwm::{DwmGetWindowAttribute, DWMWA_CLOAKED};
+use windows::Win32::UI::WindowsAndMessaging::{
+    EnumWindows, GetAncestor, GetLastActivePopup, GetWindowInfo, GetWindowTextA, GetWindowTextW,
+    IsWindowVisible, MoveWindow, GA_ROOTOWNER, WINDOWINFO, WINDOW_STYLE, WS_BORDER, WS_DISABLED,
+    WS_EX_APPWINDOW, WS_EX_TOOLWINDOW, WS_MAXIMIZE, WS_MINIMIZE, WS_POPUP, WS_VISIBLE,
+};
 use windows::{
     Devices::{
         Display::DisplayMonitor,
@@ -10,19 +17,14 @@ use windows::{
     Foundation::{EventRegistrationToken, TypedEventHandler},
 };
 
-type MonitorList = Arc<RwLock<Vec<Monitor>>>;
+type WindowList = Arc<RwLock<Vec<Window>>>;
 
-pub struct MonitorHandler {
+pub struct WindowWatcher {
     watcher: DeviceWatcher,
-    monitors: MonitorList,
+    windows: WindowList,
     is_sleep: AtomicBool,
     add_token: Option<EventRegistrationToken>,
     remove_token: Option<EventRegistrationToken>,
-}
-
-pub(self) struct Monitor {
-    pub info: DeviceInformation,
-    pub windows: Vec<Window>,
 }
 
 pub(self) struct Window {
@@ -30,49 +32,49 @@ pub(self) struct Window {
     pub pos: RECT,
 }
 
-impl MonitorHandler {
-    pub(crate) fn create_watcher() -> Self {
+impl WindowWatcher {
+    pub fn create() -> Self {
         let filter = DisplayMonitor::GetDeviceSelector().unwrap();
 
         let watcher = DeviceInformation::CreateWatcherAqsFilter(&filter).unwrap();
 
-        let monitors = Arc::new(RwLock::new(Vec::<Monitor>::new()));
+        let windows = Arc::new(RwLock::new(Vec::<Window>::new()));
 
-        MonitorHandler {
+        WindowWatcher {
             watcher,
-            monitors,
+            windows,
             is_sleep: AtomicBool::new(false),
             add_token: None,
             remove_token: None,
         }
     }
 
-    pub fn start(mut self) -> ! {
+    pub fn start(self) -> ! {
         use std::hint;
         use std::sync::atomic::Ordering;
         use std::thread;
 
-        let mut leak: &'static mut Self = Box::leak(Box::new(self));
+        let leak: &'static mut Self = Box::leak(Box::new(self));
 
         let leak = Arc::new(Mutex::new(leak));
 
         Self::hook_events(leak.clone());
-        
+
         {
             let s = leak.lock().expect("Mutex is poisoned?");
             s.watcher.Start().expect("Failed to start watcher");
         }
-        
+
         loop {
             // Wait for the monitor to be woken up
             {
                 loop {
                     let self_lock = leak.lock().expect("Mutex is poisoned :(");
-                
+
                     let is_sleep = self_lock.is_sleep.load(Ordering::Relaxed);
 
                     if !is_sleep {
-                        break
+                        break;
                     }
 
                     drop(self_lock); // Drop before we spin or we'll deadlock
@@ -82,27 +84,31 @@ impl MonitorHandler {
 
             let self_lock = leak.lock().expect("Mutex is poisoned");
 
-            let mut monitors = self_lock.monitors.write().unwrap();
-            for monitor in monitors.iter_mut() {
-                let mut windows = Vec::<Window>::new();
-                unsafe {
-                    EnumWindows(
-                        Some(window_callback),
-                        LPARAM(((&mut windows) as *mut _) as isize),
-                    );
-                }
-                monitor.windows = windows;
+            let mut windows = self_lock.windows.write().unwrap();
+
+            let window_list = &mut Vec::<Window>::new();
+            unsafe {
+                EnumWindows(
+                    Some(window_callback),
+                    LPARAM((window_list as *mut _) as isize),
+                );
             }
-            thread::sleep(std::time::Duration::from_millis(3000));
+
+            windows.clear();
+            windows.append(window_list);
+
+            drop(windows); // drop the borrow
+            drop(self_lock); // drop the lock
+
+            thread::sleep(std::time::Duration::from_millis(1500));
         }
     }
 
     fn hook_events(this: Arc<Mutex<&'static mut Self>>) {
-
         let add_token: EventRegistrationToken;
         let remove_token: EventRegistrationToken;
 
-        {    
+        {
             let add_clone = this.clone();
             add_token = this
                 .lock()
@@ -110,24 +116,31 @@ impl MonitorHandler {
                 .watcher
                 .Added(&TypedEventHandler::new(
                     move |w: &Option<DeviceWatcher>, info: &Option<DeviceInformation>| {
-                        let mut s = add_clone.lock().expect("Mutex is poisoned");
-                        s.added(w, info, s.monitors.clone())
+                        println!("Added: {:?}", info);
+                        let s = add_clone.lock().expect("Mutex is poisoned");
+                        s.added(w, info, s.windows.clone())
                     },
                 ))
                 .unwrap();
         }
 
-        let remove_clone = this.clone();
-        remove_token = this
-            .lock()
-            .expect("Mutex is poisoned")
-            .watcher
-            .Removed(&TypedEventHandler::new(
-                move |watcher, info: &Option<DeviceInformationUpdate>| 
-                remove_clone.lock().expect("Mutex is poisoned").removed(watcher, info),
-            ))
-            .unwrap();
-
+        {
+            let remove_clone = this.clone();
+            remove_token = this
+                .lock()
+                .expect("Mutex is poisoned")
+                .watcher
+                .Removed(&TypedEventHandler::new(
+                    move |watcher, info: &Option<DeviceInformationUpdate>| {
+                        println!("Removed: {:?}", info);
+                        remove_clone
+                            .lock()
+                            .expect("Mutex is poisoned")
+                            .removed(watcher, info)
+                    },
+                ))
+                .unwrap();
+        }
 
         let mut this = this.lock().expect("Mutex is poisoned");
 
@@ -139,46 +152,39 @@ impl MonitorHandler {
         &self,
         _watcher: &Option<DeviceWatcher>,
         info: &Option<DeviceInformation>,
-        lock: Arc<RwLock<Vec<Monitor>>>,
+        lock: WindowList,
     ) -> Result<(), windows::core::Error> {
-        let unwrapped = match info {
-            Some(info) => info,
-            None => return Ok(()),
-        };
-
-        let read = lock.read().unwrap();
-
-        if read.iter().any(|m| m.info.Id() == unwrapped.Id()) {
+        if info.is_none() {
             return Ok(());
         }
 
-        drop(read);
+        if !self.is_sleep.load(std::sync::atomic::Ordering::Relaxed) {
+            return Ok(());
+        }
 
-        let mut monitors = lock.write().unwrap();
+        self.is_sleep
+            .store(false, std::sync::atomic::Ordering::Relaxed);
 
-        for monitor in monitors.iter_mut() {
-            if monitor.info.Id() != unwrapped.Id() {
-                monitor.info = unwrapped.clone();
-                return Ok(());
-            } else {
-                for i in (0..monitor.windows.len()).rev() {
-                    unsafe {
-                        let window = monitor.windows.get(i).unwrap();
-                        let exists = IsWindowVisible(window.id).as_bool();
-                        if !exists {
-                            monitor.windows.remove(i);
-                            continue;
-                        }
+        let mut windows = lock.write().unwrap();
 
-                        let (x, y, w, h) = (
-                            window.pos.left,
-                            window.pos.top,
-                            window.pos.right - window.pos.left,
-                            window.pos.bottom - window.pos.top,
-                        );
-                        MoveWindow(window.id, x, y, w, h, false);
-                    }
+        for i in (0..windows.len()).rev() {
+            unsafe {
+                let window = windows.get(i).unwrap();
+                let exists = IsWindowVisible(window.id).as_bool();
+                if !exists {
+                    println!("Skipping nonexistent window");
+                    windows.remove(i);
+                    continue;
                 }
+
+                let (x, y, w, h) = (
+                    window.pos.left,
+                    window.pos.top,
+                    window.pos.right - window.pos.left,
+                    window.pos.bottom - window.pos.top,
+                );
+                MoveWindow(window.id, x, y, w, h, false);
+                println!("Moved window {:?} to it's last known position!", window.id);
             }
         }
         Ok(())
@@ -201,29 +207,48 @@ impl MonitorHandler {
     }
 }
 
-impl Drop for MonitorHandler {
+impl Drop for WindowWatcher {
     fn drop(&mut self) {
         let _ = self.watcher.RemoveAdded(self.add_token.unwrap());
         let _ = self.watcher.RemoveRemoved(self.remove_token.unwrap());
 
-        self.watcher.Stop();
+        let _ = self.watcher.Stop();
     }
 }
 
 extern "system" fn window_callback(hwnd: HWND, ptr: LPARAM) -> BOOL {
     unsafe {
-        if IsWindowVisible(hwnd).as_bool() {
-            let vec = &mut *(ptr.0 as *mut Vec<Window>);
+        let window_info = &mut WINDOWINFO::default();
+        GetWindowInfo(hwnd, window_info);
 
-            let mut rect = std::mem::zeroed();
-            windows::Win32::UI::WindowsAndMessaging::GetWindowRect(hwnd, &mut rect);
+        if IsWindowVisible(hwnd).as_bool() && is_app_window(hwnd, *window_info) {
+            let vec = &mut *(ptr.0 as *mut Vec<Window>);
 
             vec.push(Window {
                 id: hwnd,
-                pos: rect,
+                pos: window_info.rcWindow,
             });
         }
 
         true.into()
     }
+}
+
+unsafe fn is_app_window(hwnd: HWND, info: WINDOWINFO) -> bool {
+    if !IsWindowVisible(hwnd).as_bool() {
+        return false;
+    }
+
+    if info.dwStyle & WS_POPUP.0 != 0 {
+        return false;
+    }
+
+    let mut cloak = 0;
+
+    // turn cloak_val into *c_void
+    let cloak_val = &mut cloak as *mut _ as *mut c_void;
+
+    DwmGetWindowAttribute(hwnd, DWMWA_CLOAKED, cloak_val, 4).expect("Windows please");
+
+    cloak == 0
 }
