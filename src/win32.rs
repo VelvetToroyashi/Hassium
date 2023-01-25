@@ -1,3 +1,4 @@
+use std::borrow::Borrow;
 use std::ffi::c_void;
 use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex, RwLock};
@@ -69,16 +70,18 @@ impl WindowWatcher {
             // Wait for the monitor to be woken up
             {
                 loop {
-                    let self_lock = leak.lock().expect("Mutex is poisoned :(");
-
-                    let is_sleep = self_lock.is_sleep.load(Ordering::Relaxed);
+                    let lock = leak.lock().expect("Mutex is poisoned");
+                    let is_sleep = lock.is_sleep.load(Ordering::Relaxed);
 
                     if !is_sleep {
                         break;
                     }
 
-                    drop(self_lock); // Drop before we spin or we'll deadlock
-                    hint::spin_loop();
+                    drop(lock); // Drop the lock
+                                // We sleep instead of spinning/yielding because in a tight loop
+                                // that runs for seconds, minutes, or even hours, we'll be hogging
+                                // the CPU for no reason. (Spin = 10%, Yield = 12%, Sleep = 0%)
+                    thread::sleep(std::time::Duration::from_millis(100));
                 }
             }
 
