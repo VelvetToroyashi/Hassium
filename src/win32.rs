@@ -1,7 +1,7 @@
-use std::borrow::Borrow;
 use std::ffi::c_void;
 use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex, RwLock};
+use std::thread;
 
 use windows::Win32::Foundation::{BOOL, HWND, LPARAM, RECT};
 use windows::Win32::Graphics::Dwm::{DwmGetWindowAttribute, DWMWA_CLOAKED};
@@ -68,22 +68,20 @@ impl WindowWatcher {
 
         loop {
             // Wait for the monitor to be woken up
-            {
-                loop {
-                    let lock = leak.lock().expect("Mutex is poisoned");
-                    let is_sleep = lock.is_sleep.load(Ordering::Relaxed);
+            loop {
+                let lock = leak.lock().expect("Mutex is poisoned");
+                let is_sleep = lock.is_sleep.load(Ordering::Relaxed);
 
-                    if !is_sleep {
-                        break;
-                    }
-
-                    drop(lock); // Drop the lock
-                                // We sleep instead of spinning/yielding because in a tight loop
-                                // that runs for seconds, minutes, or even hours, we'll be hogging
-                                // the CPU for no reason. (Spin = 10%, Yield = 12%, Sleep = 0%)
-                    thread::yield_now();
-                    // thread::sleep(std::time::Duration::from_millis(100));
+                if !is_sleep {
+                    break;
                 }
+
+                drop(lock); // Drop the lock
+                            // We sleep instead of spinning/yielding because in a tight loop
+                            // that runs for seconds, minutes, or even hours, we'll be hogging
+                            // the CPU for no reason. (Spin = 10%, Yield = 12%, Sleep = 0%)
+
+                thread::sleep(std::time::Duration::from_millis(100));
             }
 
             let self_lock = leak.lock().expect("Mutex is poisoned");
@@ -169,6 +167,8 @@ impl WindowWatcher {
         self.is_sleep
             .store(false, std::sync::atomic::Ordering::Relaxed);
 
+        thread::sleep(std::time::Duration::from_millis(400));
+
         let mut windows = lock.write().unwrap();
 
         for i in (0..windows.len()).rev() {
@@ -187,7 +187,9 @@ impl WindowWatcher {
                     window.pos.right - window.pos.left,
                     window.pos.bottom - window.pos.top,
                 );
+
                 MoveWindow(window.id, x, y, w, h, false);
+
                 println!("Moved window {:?} to it's last known position!", window.id);
             }
         }

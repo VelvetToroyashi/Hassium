@@ -1,10 +1,14 @@
 #[macro_use]
 extern crate windows_service;
+extern crate core;
 
+use dialoguer::theme::ColorfulTheme;
+use dialoguer::Select;
 use std::ffi::OsString;
+use std::panic::catch_unwind;
 use std::path::Path;
-use std::thread;
 use std::time::{Duration, Instant};
+use std::{fs, thread};
 use windows_service::service::{
     ServiceAccess, ServiceControl, ServiceControlAccept, ServiceErrorControl, ServiceExitCode,
     ServiceInfo, ServiceStartType, ServiceState, ServiceStatus, ServiceType,
@@ -20,9 +24,6 @@ fn main() {
 
     if args.len() > 1 {
         match args[1].as_str() {
-            "uninstall" => {
-                uninstall_service();
-            }
             "--from_os" => {
                 hassium_service::run().unwrap();
             }
@@ -31,8 +32,37 @@ fn main() {
             }
         }
     } else {
-        // Assume the user wants to install the service
-        let _ = install_service();
+        if !check_for_admin() {
+            println!("Please run this program as administrator");
+
+            thread::sleep(Duration::from_secs(8));
+            return;
+        }
+
+        let _ = catch_unwind(get_user_intention);
+
+        thread::sleep(Duration::from_secs(8));
+    }
+}
+
+fn get_user_intention() {
+    let options = vec!["Install", "Uninstall", "Exit"];
+
+    let selection = Select::with_theme(&ColorfulTheme::default())
+        .items(&options)
+        .default(0)
+        .interact();
+
+    match selection {
+        Ok(0) => {
+            let _ = install_service();
+        }
+        Ok(1) => {
+            uninstall_service();
+        }
+        _ => {
+            std::process::exit(-1);
+        }
     }
 }
 
@@ -44,21 +74,25 @@ fn uninstall_service() {
 
     let service = service_manager
         .open_service(service_name, ServiceAccess::DELETE)
-        .unwrap();
-    service.delete().unwrap();
+        .expect("Failed to open service; it may not be installed yet.");
+    service
+        .delete()
+        .expect("Failed to remove the service. Was it installed to begin with?");
+
+    println!("Service uninstalled successfully!");
 }
 
 fn install_service() -> windows_service::Result<()> {
     let manager_access = ServiceManagerAccess::CONNECT | ServiceManagerAccess::CREATE_SERVICE;
     let service_manager = ServiceManager::local_computer(None::<&str>, manager_access)?;
 
-    let service_binary_path = ::std::env::current_exe().unwrap();
+    let service_binary_path = std::env::current_exe().unwrap();
 
     let service_info = ServiceInfo {
         name: OsString::from("hassium"),
         display_name: OsString::from("Hassium DisplayPort Fix"),
         service_type: ServiceType::USER_OWN_PROCESS,
-        start_type: ServiceStartType::AutoStart,
+        start_type: ServiceStartType::OnDemand,
         error_control: ServiceErrorControl::Normal,
         executable_path: service_binary_path,
         launch_arguments: vec!["--from_os".into()],
@@ -76,6 +110,14 @@ fn install_service() -> windows_service::Result<()> {
     thread::sleep(Duration::from_secs(8));
 
     Ok(())
+}
+
+fn check_for_admin() -> bool {
+    if fs::read_dir("C:\\Program Files\\Hassium").is_err() {
+        fs::create_dir("C:\\Program Files\\Hassium").is_ok()
+    } else {
+        fs::write("C:\\Program Files\\Hassium\\temp", "").is_ok()
+    }
 }
 
 mod hassium_service {

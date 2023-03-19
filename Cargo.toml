@@ -13,9 +13,12 @@ windows = { version = "0.44", features = [
     "Foundation_Collections",
     "Devices_Enumeration",
     "Devices_Display",
+    "System",
     "Win32_Foundation",
     "Win32_UI_Shell",
     "Win32_UI_WindowsAndMessaging",
     "Win32_Graphics_Dwm",
 ] }
-windows-service = "0.5.0"
+windows-service = "0.6.0"
+
+dialoguer = "0.10.3"
