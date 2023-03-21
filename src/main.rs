@@ -76,6 +76,8 @@ fn install() {
     println!("Installation complete!");
 
     run_child_detached();
+
+    thread::sleep(std::time::Duration::from_secs(5));
 }
 
 fn run_child_detached() {
@@ -117,6 +119,8 @@ fn uninstall() {
 
         println!("Uninstallation complete!");
     }
+
+    thread::sleep(std::time::Duration::from_secs(5));
 }
 
 fn ensure_admin_privileges() -> bool {
