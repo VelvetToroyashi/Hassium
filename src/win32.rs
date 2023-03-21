@@ -1,4 +1,3 @@
-use std::borrow::Borrow;
 use std::ffi::c_void;
 use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex, RwLock};
@@ -6,9 +5,7 @@ use std::sync::{Arc, Mutex, RwLock};
 use windows::Win32::Foundation::{BOOL, HWND, LPARAM, RECT};
 use windows::Win32::Graphics::Dwm::{DwmGetWindowAttribute, DWMWA_CLOAKED};
 use windows::Win32::UI::WindowsAndMessaging::{
-    EnumWindows, GetAncestor, GetLastActivePopup, GetWindowInfo, GetWindowTextA, GetWindowTextW,
-    IsWindowVisible, MoveWindow, GA_ROOTOWNER, WINDOWINFO, WINDOW_STYLE, WS_BORDER, WS_DISABLED,
-    WS_EX_APPWINDOW, WS_EX_TOOLWINDOW, WS_MAXIMIZE, WS_MINIMIZE, WS_POPUP, WS_VISIBLE,
+    EnumWindows, GetWindowInfo, IsWindowVisible, MoveWindow, WINDOWINFO, WS_POPUP,
 };
 use windows::{
     Devices::{
@@ -51,7 +48,6 @@ impl WindowWatcher {
     }
 
     pub fn start(self) -> ! {
-        use std::hint;
         use std::sync::atomic::Ordering;
         use std::thread;
 
@@ -242,7 +238,7 @@ unsafe fn is_app_window(hwnd: HWND, info: WINDOWINFO) -> bool {
         return false;
     }
 
-    if info.dwStyle & WS_POPUP.0 != 0 {
+    if (info.dwStyle.0 & WS_POPUP.0) != 0 {
         return false;
     }
 
