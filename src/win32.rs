@@ -1,4 +1,3 @@
-use std::borrow::Borrow;
 use std::ffi::c_void;
 use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex, RwLock};
@@ -6,9 +5,7 @@ use std::sync::{Arc, Mutex, RwLock};
 use windows::Win32::Foundation::{BOOL, HWND, LPARAM, RECT};
 use windows::Win32::Graphics::Dwm::{DwmGetWindowAttribute, DWMWA_CLOAKED};
 use windows::Win32::UI::WindowsAndMessaging::{
-    EnumWindows, GetAncestor, GetLastActivePopup, GetWindowInfo, GetWindowTextA, GetWindowTextW,
-    IsWindowVisible, MoveWindow, GA_ROOTOWNER, WINDOWINFO, WINDOW_STYLE, WS_BORDER, WS_DISABLED,
-    WS_EX_APPWINDOW, WS_EX_TOOLWINDOW, WS_MAXIMIZE, WS_MINIMIZE, WS_POPUP, WS_VISIBLE,
+    EnumWindows, GetWindowInfo, IsWindowVisible, MoveWindow, WINDOWINFO, WS_POPUP,
 };
 use windows::{
     Devices::{
@@ -51,7 +48,6 @@ impl WindowWatcher {
     }
 
     pub fn start(self) -> ! {
-        use std::hint;
         use std::sync::atomic::Ordering;
         use std::thread;
 
@@ -119,7 +115,6 @@ impl WindowWatcher {
                 .watcher
                 .Added(&TypedEventHandler::new(
                     move |w: &Option<DeviceWatcher>, info: &Option<DeviceInformation>| {
-                        println!("Added: {:?}", info);
                         let s = add_clone.lock().expect("Mutex is poisoned");
                         s.added(w, info, s.windows.clone())
                     },
@@ -135,7 +130,6 @@ impl WindowWatcher {
                 .watcher
                 .Removed(&TypedEventHandler::new(
                     move |watcher, info: &Option<DeviceInformationUpdate>| {
-                        println!("Removed: {:?}", info);
                         remove_clone
                             .lock()
                             .expect("Mutex is poisoned")
@@ -175,7 +169,6 @@ impl WindowWatcher {
                 let window = windows.get(i).unwrap();
                 let exists = IsWindowVisible(window.id).as_bool();
                 if !exists {
-                    println!("Skipping nonexistent window");
                     windows.remove(i);
                     continue;
                 }
@@ -187,7 +180,6 @@ impl WindowWatcher {
                     window.pos.bottom - window.pos.top,
                 );
                 MoveWindow(window.id, x, y, w, h, false);
-                println!("Moved window {:?} to it's last known position!", window.id);
             }
         }
         Ok(())
@@ -242,7 +234,7 @@ unsafe fn is_app_window(hwnd: HWND, info: WINDOWINFO) -> bool {
         return false;
     }
 
-    if info.dwStyle & WS_POPUP.0 != 0 {
+    if (info.dwStyle.0 & WS_POPUP.0) != 0 {
         return false;
     }
 
