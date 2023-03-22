@@ -1,7 +1,7 @@
+use std::os::windows::process::CommandExt;
 use std::path::PathBuf;
+use std::process::Command;
 use std::{fs, thread};
-use windows::core::{PCSTR, PSTR};
-
 mod win32;
 
 const INSTALL_PATH: &str = "C:\\Program Files\\Hassium\\hassium.exe";
@@ -14,7 +14,6 @@ fn main() {
         let watcher = win32::WindowWatcher::create();
 
         let handle = thread::spawn(move || {
-            println!("Starting watcher thread");
             watcher.start();
         });
 
@@ -39,6 +38,7 @@ fn main() {
     }
 }
 
+// TODO: Call child process with a hidden window instead? (https://learn.microsoft.com/en-us/windows/win32/procthread/process-creation-flags)
 fn hide_console_window() {
     use windows::Win32::System::Console::GetConsoleWindow;
     use windows::Win32::UI::WindowsAndMessaging::{ShowWindow, SW_HIDE};
@@ -81,20 +81,13 @@ fn install() {
 }
 
 fn run_child_detached() {
-    unsafe {
-        windows::Win32::System::Threading::CreateProcessA(
-            PCSTR::null(),
-            PSTR::from_raw(INSTALL_PATH.as_ptr() as *mut _),
-            None,
-            None,
-            false,
-            windows::Win32::System::Threading::CREATE_NEW_CONSOLE,
-            None,
-            None,
-            std::ptr::null_mut(),
-            std::ptr::null_mut(),
-        );
-    }
+    const CREATE_NO_WINDOW: u32 = 0x08000000;
+    const DETACHED_PROCESS: u32 = 0x00000008;
+
+    let _ = Command::new(INSTALL_PATH)
+        .creation_flags(CREATE_NO_WINDOW | DETACHED_PROCESS)
+        .spawn()
+        .unwrap();
 }
 
 fn uninstall() {

@@ -115,7 +115,6 @@ impl WindowWatcher {
                 .watcher
                 .Added(&TypedEventHandler::new(
                     move |w: &Option<DeviceWatcher>, info: &Option<DeviceInformation>| {
-                        println!("Added: {:?}", info);
                         let s = add_clone.lock().expect("Mutex is poisoned");
                         s.added(w, info, s.windows.clone())
                     },
@@ -131,7 +130,6 @@ impl WindowWatcher {
                 .watcher
                 .Removed(&TypedEventHandler::new(
                     move |watcher, info: &Option<DeviceInformationUpdate>| {
-                        println!("Removed: {:?}", info);
                         remove_clone
                             .lock()
                             .expect("Mutex is poisoned")
@@ -171,7 +169,6 @@ impl WindowWatcher {
                 let window = windows.get(i).unwrap();
                 let exists = IsWindowVisible(window.id).as_bool();
                 if !exists {
-                    println!("Skipping nonexistent window");
                     windows.remove(i);
                     continue;
                 }
@@ -183,7 +180,6 @@ impl WindowWatcher {
                     window.pos.bottom - window.pos.top,
                 );
                 MoveWindow(window.id, x, y, w, h, false);
-                println!("Moved window {:?} to it's last known position!", window.id);
             }
         }
         Ok(())
