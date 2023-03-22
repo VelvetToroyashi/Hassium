@@ -23,8 +23,8 @@ fn main() {
     } else {
         let opts = vec!["Install", "Uninstall", "Exit"];
 
-        let selection = dialoguer::Select::new()
-            .with_prompt("Select an option")
+        let selection = dialoguer::Select::with_theme(&dialoguer::theme::ColorfulTheme::default())
+            .with_prompt("Hassium: The Win10 DisplayPort Fixer")
             .items(&opts)
             .default(0)
             .interact()
