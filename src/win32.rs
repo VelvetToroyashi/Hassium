@@ -1,11 +1,15 @@
 use std::ffi::c_void;
-use std::sync::atomic::AtomicBool;
+use std::mem::MaybeUninit;
+use std::pin::Pin;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
+use std::thread;
 
 use windows::Win32::Foundation::{BOOL, HWND, LPARAM, RECT};
 use windows::Win32::Graphics::Dwm::{DwmGetWindowAttribute, DWMWA_CLOAKED};
 use windows::Win32::UI::WindowsAndMessaging::{
-    EnumWindows, GetWindowInfo, IsWindowVisible, MoveWindow, WINDOWINFO, WS_POPUP,
+    EnumWindows, GetSystemMetrics, GetWindowInfo, IsWindowVisible, MoveWindow, SC_MONITORPOWER,
+    SM_CMONITORS, WINDOWINFO, WS_POPUP,
 };
 use windows::{
     Devices::{
@@ -21,6 +25,8 @@ pub struct WindowWatcher {
     watcher: DeviceWatcher,
     windows: WindowList,
     is_sleep: AtomicBool,
+    monitor_count: i8,
+    awake_monitors: i8,
     add_token: Option<EventRegistrationToken>,
     remove_token: Option<EventRegistrationToken>,
 }
@@ -38,10 +44,14 @@ impl WindowWatcher {
 
         let windows = Arc::new(RwLock::new(Vec::<Window>::new()));
 
+        let window_count = unsafe { GetSystemMetrics(SM_CMONITORS) } as i8;
+
         WindowWatcher {
             watcher,
             windows,
             is_sleep: AtomicBool::new(false),
+            monitor_count: window_count,
+            awake_monitors: window_count,
             add_token: None,
             remove_token: None,
         }
@@ -115,7 +125,7 @@ impl WindowWatcher {
                 .watcher
                 .Added(&TypedEventHandler::new(
                     move |w: &Option<DeviceWatcher>, info: &Option<DeviceInformation>| {
-                        let s = add_clone.lock().expect("Mutex is poisoned");
+                        let s = &mut *add_clone.lock().expect("Mutex is poisoned");
                         s.added(w, info, s.windows.clone())
                     },
                 ))
@@ -130,10 +140,9 @@ impl WindowWatcher {
                 .watcher
                 .Removed(&TypedEventHandler::new(
                     move |watcher, info: &Option<DeviceInformationUpdate>| {
-                        remove_clone
-                            .lock()
-                            .expect("Mutex is poisoned")
-                            .removed(watcher, info)
+                        let s = &mut *remove_clone.lock().expect("Mutex is poisoned");
+
+                        s.removed(watcher, info)
                     },
                 ))
                 .unwrap();
@@ -146,7 +155,7 @@ impl WindowWatcher {
     }
 
     fn added(
-        &self,
+        &mut self,
         _watcher: &Option<DeviceWatcher>,
         info: &Option<DeviceInformation>,
         lock: WindowList,
@@ -155,12 +164,15 @@ impl WindowWatcher {
             return Ok(());
         }
 
-        if !self.is_sleep.load(std::sync::atomic::Ordering::Relaxed) {
+        if !self.is_sleep.load(Ordering::Relaxed) && self.awake_monitors < self.monitor_count {
+            self.awake_monitors += 1;
+
             return Ok(());
         }
 
-        self.is_sleep
-            .store(false, std::sync::atomic::Ordering::Relaxed);
+        thread::sleep(std::time::Duration::from_millis(4000));
+
+        self.is_sleep.store(false, Ordering::Relaxed);
 
         let mut windows = lock.write().unwrap();
 
@@ -186,7 +198,7 @@ impl WindowWatcher {
     }
 
     fn removed(
-        &self,
+        &mut self,
         _watcher: &Option<DeviceWatcher>,
         info: &Option<DeviceInformationUpdate>,
     ) -> Result<(), windows::core::Error> {
@@ -195,8 +207,8 @@ impl WindowWatcher {
             None => return Ok(()),
         };
 
-        self.is_sleep
-            .store(true, std::sync::atomic::Ordering::Relaxed);
+        self.is_sleep.store(true, Ordering::Relaxed);
+        self.awake_monitors = self.awake_monitors.checked_sub(1).unwrap_or(0);
 
         Ok(())
     }
