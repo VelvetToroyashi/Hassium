@@ -1,6 +1,4 @@
 use std::ffi::c_void;
-use std::mem::MaybeUninit;
-use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 use std::thread;
@@ -8,8 +6,8 @@ use std::thread;
 use windows::Win32::Foundation::{BOOL, HWND, LPARAM, RECT};
 use windows::Win32::Graphics::Dwm::{DwmGetWindowAttribute, DWMWA_CLOAKED};
 use windows::Win32::UI::WindowsAndMessaging::{
-    EnumWindows, GetSystemMetrics, GetWindowInfo, IsWindowVisible, MoveWindow, SC_MONITORPOWER,
-    SM_CMONITORS, WINDOWINFO, WS_POPUP,
+    EnumWindows, GetSystemMetrics, GetWindowInfo, IsWindowVisible, MoveWindow, SM_CMONITORS,
+    WINDOWINFO, WS_POPUP,
 };
 use windows::{
     Devices::{
@@ -58,9 +56,6 @@ impl WindowWatcher {
     }
 
     pub fn start(self) -> ! {
-        use std::sync::atomic::Ordering;
-        use std::thread;
-
         let leak: &'static mut Self = Box::leak(Box::new(self));
 
         let leak = Arc::new(Mutex::new(leak));
