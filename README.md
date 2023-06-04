@@ -25,6 +25,6 @@ Windows decides to shuffle your windows around.
 
 ## Installation
 
-Simply download the latest release from the [releases page](https://github.come/VelvetThePanda/Hassium/releases) and run it.
+Simply download the latest release from the [releases page](./releases) and run it.
 
 You can also build from source by cloning the repository and running `cargo build --release`.
